@@ -964,28 +964,40 @@ impl ShaclValidator {
             return Err(ShaclValidationError::max_recursion_depth(depth).into());
         }
 
-        // Try to find the shape
-        if let Some(node_shape) = self.shapes_graph.get_node_shape(shape_id) {
-            let mut temp_report = ValidationReport::new();
-            self.validate_node_against_shape(context, &mut temp_report, node, node_shape, depth)?;
-            return Ok(temp_report.conforms());
+        // Check cache for previously computed result
+        let cache_key = (node.clone(), shape_id.clone());
+        if let Some(&conforms) = context.shape_conformance_cache.get(&cache_key) {
+            return Ok(conforms);
         }
 
-        if let Some(prop_shape) = self.shapes_graph.get_property_shape(shape_id) {
-            let mut temp_report = ValidationReport::new();
-            self.validate_property_shape(
-                context,
-                &mut temp_report,
-                node,
-                prop_shape,
-                depth,
-                prop_shape.base.severity,
-            )?;
-            return Ok(temp_report.conforms());
-        }
+        // Compute conformance
+        let conforms = {
+            // Try to find the shape
+            if let Some(node_shape) = self.shapes_graph.get_node_shape(shape_id) {
+                let mut temp_report = ValidationReport::new();
+                self.validate_node_against_shape(context, &mut temp_report, node, node_shape, depth)?;
+                temp_report.conforms()
+            } else if let Some(prop_shape) = self.shapes_graph.get_property_shape(shape_id) {
+                let mut temp_report = ValidationReport::new();
+                self.validate_property_shape(
+                    context,
+                    &mut temp_report,
+                    node,
+                    prop_shape,
+                    depth,
+                    prop_shape.base.severity,
+                )?;
+                temp_report.conforms()
+            } else {
+                // Shape not found - treat as conforming (or could return error)
+                true
+            }
+        };
 
-        // Shape not found - treat as conforming (or could return error)
-        Ok(true)
+        // Store result in cache
+        context.shape_conformance_cache.insert(cache_key, conforms);
+
+        Ok(conforms)
     }
 }
 
@@ -995,6 +1007,8 @@ struct ValidationContext<'a> {
     validator: &'a ShaclValidator,
     data_graph: &'a Graph,
     regex_cache: FxHashMap<String, Regex>,
+    /// Cache for shape conformance checks to avoid redundant validation
+    shape_conformance_cache: FxHashMap<(Term, ShapeId), bool>,
 }
 
 impl<'a> ValidationContext<'a> {
@@ -1003,6 +1017,7 @@ impl<'a> ValidationContext<'a> {
             validator,
             data_graph,
             regex_cache: FxHashMap::default(),
+            shape_conformance_cache: FxHashMap::default(),
         }
     }
 

@@ -184,9 +184,52 @@ impl QueryEvaluator {
         prepared.explain(dataset)
     }
 
-    /// Use a given [`ServiceHandler`] to execute [SPARQL 1.1 Federated Query](https://www.w3.org/TR/sparql11-federated-query/) SERVICE calls.
+    /// Registers a custom [`ServiceHandler`] for a specific service to execute [SPARQL 1.1 Federated Query](https://www.w3.org/TR/sparql11-federated-query/) SERVICE calls.
     ///
-    /// See [`ServiceHandler`] for an example.
+    /// When a SPARQL query contains a SERVICE clause targeting the specified service name,
+    /// the provided handler will be invoked to process the federated query.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use oxiri::Iri;
+    /// use oxrdf::{Literal, NamedNode, Variable};
+    /// use sparesults::QuerySolution;
+    /// use spareval::{QueryEvaluator, QuerySolutionIter, ServiceHandler};
+    /// use spargebra::algebra::GraphPattern;
+    /// use std::convert::Infallible;
+    /// use std::iter::once;
+    /// use std::sync::Arc;
+    ///
+    /// struct MyServiceHandler;
+    ///
+    /// impl ServiceHandler for MyServiceHandler {
+    ///     type Error = Infallible;
+    ///
+    ///     fn handle(
+    ///         &self,
+    ///         _pattern: &GraphPattern,
+    ///         _base_iri: Option<&Iri<String>>,
+    ///     ) -> Result<QuerySolutionIter<'static>, Self::Error> {
+    ///         // Return a simple result
+    ///         let variables = [Variable::new_unchecked("x")].into();
+    ///         Ok(QuerySolutionIter::new(
+    ///             Arc::clone(&variables),
+    ///             once(Ok(QuerySolution::from((
+    ///                 variables,
+    ///                 vec![Some(Literal::from(42).into())],
+    ///             )))),
+    ///         ))
+    ///     }
+    /// }
+    ///
+    /// let service_name = NamedNode::new("http://example.com/sparql")?;
+    /// let _evaluator = QueryEvaluator::new()
+    ///     .with_service_handler(service_name, MyServiceHandler);
+    /// # Result::<_, Box<dyn std::error::Error>>::Ok(())
+    /// ```
+    ///
+    /// See [`ServiceHandler`] for more details on implementing custom handlers.
     #[inline]
     #[must_use]
     pub fn with_service_handler(
@@ -468,7 +511,41 @@ impl QueryEvaluator {
 
     /// Evaluates a SPARQL expression against an empty dataset with optional variable substitutions.
     ///
+    /// This method is useful for evaluating SPARQL expressions in isolation, without executing
+    /// a full query. Variables in the expression can be bound to specific values via substitutions.
+    ///
     /// Returns the computed term or `None` if an error occurs or the expression is invalid.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use oxrdf::{Literal, Term, Variable};
+    /// use spareval::QueryEvaluator;
+    /// use sparopt::algebra::Expression;
+    ///
+    /// let evaluator = QueryEvaluator::new();
+    ///
+    /// // Evaluate a simple arithmetic expression: 1 + 2
+    /// let expr = Expression::Add(
+    ///     Box::new(Expression::from(Literal::from(1_i32))),
+    ///     Box::new(Expression::from(Literal::from(2_i32))),
+    /// );
+    /// let result = evaluator.evaluate_expression(&expr, std::iter::empty());
+    /// assert_eq!(result, Some(Term::from(Literal::from(3_i32))));
+    ///
+    /// // Evaluate with variable substitution: ?x + 2 where ?x = 5
+    /// let x = Variable::new("x")?;
+    /// let expr_with_var = Expression::Add(
+    ///     Box::new(Expression::from(x.clone())),
+    ///     Box::new(Expression::from(Literal::from(2_i32))),
+    /// );
+    /// let result = evaluator.evaluate_expression(
+    ///     &expr_with_var,
+    ///     [(&x, Literal::from(5_i32).into())]
+    /// );
+    /// assert_eq!(result, Some(Term::from(Literal::from(7_i32))));
+    /// # Result::<_, Box<dyn std::error::Error>>::Ok(())
+    /// ```
     pub fn evaluate_expression<'a>(
         &self,
         expression: &sparopt::algebra::Expression,
@@ -478,10 +555,51 @@ impl QueryEvaluator {
             .map(Into::into)
     }
 
-    /// Evaluates a SPARQL expression effective boolean value (EBV) against an empty dataset
+    /// Evaluates a SPARQL expression's effective boolean value (EBV) against an empty dataset
     /// with optional variable substitutions.
     ///
+    /// The effective boolean value is defined in the [SPARQL specification](https://www.w3.org/TR/sparql11-query/#ebv).
+    /// For example, numeric zero and empty strings have EBV of `false`, while non-zero numbers
+    /// and non-empty strings have EBV of `true`. Some terms (like IRIs) have no defined EBV.
+    ///
     /// Returns the EBV or `None` if an error occurs or EBV is undefined for the result type.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use oxrdf::Literal;
+    /// use spareval::QueryEvaluator;
+    /// use sparopt::algebra::Expression;
+    ///
+    /// let evaluator = QueryEvaluator::new();
+    ///
+    /// // Numeric EBV: 0 is false, non-zero is true
+    /// let zero_expr = Expression::from(Literal::from(0_i32));
+    /// assert_eq!(
+    ///     evaluator.evaluate_effective_boolean_value_expression(&zero_expr, std::iter::empty()),
+    ///     Some(false)
+    /// );
+    ///
+    /// let five_expr = Expression::from(Literal::from(5_i32));
+    /// assert_eq!(
+    ///     evaluator.evaluate_effective_boolean_value_expression(&five_expr, std::iter::empty()),
+    ///     Some(true)
+    /// );
+    ///
+    /// // String EBV: empty is false, non-empty is true
+    /// let empty_str = Expression::from(Literal::from(""));
+    /// assert_eq!(
+    ///     evaluator.evaluate_effective_boolean_value_expression(&empty_str, std::iter::empty()),
+    ///     Some(false)
+    /// );
+    ///
+    /// let non_empty = Expression::from(Literal::from("hello"));
+    /// assert_eq!(
+    ///     evaluator.evaluate_effective_boolean_value_expression(&non_empty, std::iter::empty()),
+    ///     Some(true)
+    /// );
+    /// # Result::<_, Box<dyn std::error::Error>>::Ok(())
+    /// ```
     pub fn evaluate_effective_boolean_value_expression<'a>(
         &self,
         expression: &sparopt::algebra::Expression,

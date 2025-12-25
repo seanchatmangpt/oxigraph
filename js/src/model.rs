@@ -269,6 +269,7 @@ export class Dataset {
     toArray(): Quad[];
     map<T>(callback: (quad: Quad) => T, thisArg?: any): T[];
     reduce<T>(callback: (accumulator: T, quad: Quad) => T, initialValue: T): T;
+    reduceRight<T>(callback: (accumulator: T, quad: Quad) => T, initialValue: T): T;
     at(index: number): Quad | undefined;
     slice(start?: number, end?: number): Quad[];
 
@@ -1747,6 +1748,21 @@ impl JsDataset {
         let mut accumulator = initial_value;
         for quad in self.inner.iter() {
             let quad_js: JsValue = JsQuad::from(quad.into_owned()).into();
+            accumulator = callback.call2(&JsValue::NULL, &accumulator, &quad_js)?;
+        }
+        Ok(accumulator)
+    }
+
+    #[wasm_bindgen(js_name = reduceRight)]
+    pub fn reduce_right(
+        &self,
+        callback: &js_sys::Function,
+        initial_value: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let mut accumulator = initial_value;
+        let quads: Vec<_> = self.inner.iter().collect();
+        for quad in quads.iter().rev() {
+            let quad_js: JsValue = JsQuad::from(quad.clone().into_owned()).into();
             accumulator = callback.call2(&JsValue::NULL, &accumulator, &quad_js)?;
         }
         Ok(accumulator)

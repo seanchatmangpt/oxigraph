@@ -142,21 +142,21 @@ impl Target {
 
 /// Gets a class and all its subclasses.
 fn get_class_hierarchy(graph: &Graph, class: &NamedNode) -> Vec<Term> {
-    let mut classes = vec![Term::NamedNode(class.clone())];
+    let mut classes = FxHashSet::default();
+    classes.insert(Term::NamedNode(class.clone()));
     let mut to_check: Vec<Term> = vec![Term::NamedNode(class.clone())];
 
     while let Some(current) = to_check.pop() {
         // Find subclasses
         for subclass in graph.subjects_for_predicate_object(rdfs::SUB_CLASS_OF, current.as_ref()) {
             let subclass_term: Term = subclass.into_owned().into();
-            if !classes.contains(&subclass_term) {
-                classes.push(subclass_term.clone());
+            if classes.insert(subclass_term.clone()) {
                 to_check.push(subclass_term);
             }
         }
     }
 
-    classes
+    classes.into_iter().collect()
 }
 
 /// Base shape containing common properties.

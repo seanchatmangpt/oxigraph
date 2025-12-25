@@ -2375,15 +2375,17 @@ mod tests {
 
         assert_eq!(quads.len(), 1);
 
-        match &quads[0].subject {
-            N3Term::BlankNode(_) => {}
-            _ => panic!("Expected blank node subject"),
-        }
+        assert!(
+            matches!(&quads[0].subject, N3Term::BlankNode(_)),
+            "Expected blank node subject, got {:?}",
+            &quads[0].subject
+        );
 
-        match &quads[0].object {
-            N3Term::BlankNode(_) => {}
-            _ => panic!("Expected blank node object"),
-        }
+        assert!(
+            matches!(&quads[0].object, N3Term::BlankNode(_)),
+            "Expected blank node object, got {:?}",
+            &quads[0].object
+        );
     }
 
     #[test]
@@ -2433,7 +2435,7 @@ mod tests {
             N3Term::Literal(lit) => {
                 assert_eq!(lit.datatype(), xsd::INTEGER);
             }
-            _ => panic!("Expected literal"),
+            other => assert!(false, "Expected literal, got {:?}", other),
         }
     }
 
@@ -2455,7 +2457,7 @@ mod tests {
                 assert_eq!(lit.datatype(), xsd::BOOLEAN);
                 assert_eq!(lit.value(), "true");
             }
-            _ => panic!("Expected literal"),
+            other => assert!(false, "Expected literal, got {:?}", other),
         }
     }
 

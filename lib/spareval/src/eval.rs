@@ -37,7 +37,7 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, atomic};
 use std::{fmt, io};
-// TODO: make expression raise error when relevant (storage I/O)
+// Note: Storage I/O errors are now properly propagated in expressions (e.g., get_triple_template_value)
 
 type InternalTupleEvaluator<'a, T> =
     Rc<dyn Fn(InternalTuple<T>) -> InternalTuplesIterator<'a, T> + 'a>;
@@ -3975,28 +3975,35 @@ impl<'a, D: QueryableDataset<'a>> Iterator for ConstructIterator<'a, D> {
                     Err(error) => return Some(Err(error)),
                 };
                 for template in &self.template {
-                    if let (Some(subject), Some(predicate), Some(object)) = (
-                        get_triple_template_value(
-                            &template.subject,
-                            &tuple,
-                            &mut self.bnodes,
-                            &self.eval.dataset,
-                        )
-                        .and_then(|t| t.try_into().ok()),
-                        get_triple_template_value(
-                            &template.predicate,
-                            &tuple,
-                            &mut self.bnodes,
-                            &self.eval.dataset,
-                        )
-                        .and_then(|t| t.try_into().ok()),
-                        get_triple_template_value(
-                            &template.object,
-                            &tuple,
-                            &mut self.bnodes,
-                            &self.eval.dataset,
-                        ),
+                    let subject = match get_triple_template_value(
+                        &template.subject,
+                        &tuple,
+                        &mut self.bnodes,
+                        &self.eval.dataset,
                     ) {
+                        Ok(opt) => opt.and_then(|t| t.try_into().ok()),
+                        Err(error) => return Some(Err(error)),
+                    };
+                    let predicate = match get_triple_template_value(
+                        &template.predicate,
+                        &tuple,
+                        &mut self.bnodes,
+                        &self.eval.dataset,
+                    ) {
+                        Ok(opt) => opt.and_then(|t| t.try_into().ok()),
+                        Err(error) => return Some(Err(error)),
+                    };
+                    let object = match get_triple_template_value(
+                        &template.object,
+                        &tuple,
+                        &mut self.bnodes,
+                        &self.eval.dataset,
+                    ) {
+                        Ok(opt) => opt,
+                        Err(error) => return Some(Err(error)),
+                    };
+
+                    if let (Some(subject), Some(predicate), Some(object)) = (subject, predicate, object) {
                         let triple = Triple {
                             subject,
                             predicate,
@@ -4111,33 +4118,36 @@ fn get_triple_template_value<'a, D: QueryableDataset<'a>>(
     tuple: &InternalTuple<D::InternalTerm>,
     bnodes: &mut Vec<BlankNode>,
     dataset: &EvalDataset<'a, D>,
-) -> Option<Term> {
+) -> Result<Option<Term>, QueryEvaluationError> {
     match selector {
-        TripleTemplateValue::Constant(term) => Some(term.clone()),
+        TripleTemplateValue::Constant(term) => Ok(Some(term.clone())),
         TripleTemplateValue::Variable(v) => {
-            tuple
-                .get(*v)
-                .and_then(|t| dataset.externalize_term(t.clone()).ok()) // TODO: raise error
+            match tuple.get(*v) {
+                Some(t) => dataset.externalize_term(t.clone()).map(Some),
+                None => Ok(None),
+            }
         }
         TripleTemplateValue::BlankNode(bnode) => {
             if *bnode >= bnodes.len() {
                 bnodes.resize_with(*bnode + 1, BlankNode::default)
             }
-            Some(bnodes[*bnode].clone().into())
+            Ok(Some(bnodes[*bnode].clone().into()))
         }
         #[cfg(feature = "sparql-12")]
-        TripleTemplateValue::Triple(triple) => Some(
-            Triple {
-                subject: get_triple_template_value(&triple.subject, tuple, bnodes, dataset)?
-                    .try_into()
-                    .ok()?,
-                predicate: get_triple_template_value(&triple.predicate, tuple, bnodes, dataset)?
-                    .try_into()
-                    .ok()?,
-                object: get_triple_template_value(&triple.object, tuple, bnodes, dataset)?,
+        TripleTemplateValue::Triple(triple) => {
+            let subject = get_triple_template_value(&triple.subject, tuple, bnodes, dataset)?
+                .and_then(|t| t.try_into().ok());
+            let predicate = get_triple_template_value(&triple.predicate, tuple, bnodes, dataset)?
+                .and_then(|t| t.try_into().ok());
+            let object = get_triple_template_value(&triple.object, tuple, bnodes, dataset)?;
+
+            match (subject, predicate, object) {
+                (Some(subject), Some(predicate), Some(object)) => {
+                    Ok(Some(Triple { subject, predicate, object }.into()))
+                }
+                _ => Ok(None),
             }
-            .into(),
-        ),
+        }
     }
 }
 

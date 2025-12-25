@@ -61,8 +61,12 @@ impl Optimizer {
             } => {
                 let left = Self::normalize_pattern(*left, input_types);
                 let right = Self::normalize_pattern(*right, input_types);
-                let mut inner_types = infer_graph_pattern_types(&left, input_types.clone());
-                inner_types.intersect_with(infer_graph_pattern_types(&right, input_types.clone()));
+                // Compute types for both patterns separately, then intersect
+                // Both clones necessary: infer_graph_pattern_types takes ownership
+                let left_types = infer_graph_pattern_types(&left, input_types.clone());
+                let right_types = infer_graph_pattern_types(&right, input_types.clone());
+                let mut inner_types = left_types;
+                inner_types.intersect_with(right_types);
                 GraphPattern::left_join(
                     left,
                     right,
@@ -594,14 +598,18 @@ impl Optimizer {
                     }
                     output_cartesian_product_joins.push(output);
                 }
+                // output_cartesian_product_joins is guaranteed to be non-empty because
+                // the Join pattern always has at least 2 children (left and right), which are
+                // flattened into to_reorder (min 2 elements), and all elements are processed
+                // into output_cartesian_product_joins (min 1 element after grouping).
+                #[expect(clippy::expect_used)]
                 output_cartesian_product_joins
                     .into_iter()
                     .reduce(|left, right| {
-                        let keys = join_key_variables(
-                            &infer_graph_pattern_types(&left, input_types.clone()),
-                            &infer_graph_pattern_types(&right, input_types.clone()),
-                            input_types,
-                        );
+                        // Cache inferred types to avoid redundant computation
+                        let left_types = infer_graph_pattern_types(&left, input_types.clone());
+                        let right_types = infer_graph_pattern_types(&right, input_types.clone());
+                        let keys = join_key_variables(&left_types, &right_types, input_types);
                         if estimate_graph_pattern_size(&left, input_types)
                             <= estimate_graph_pattern_size(&right, input_types)
                         {
@@ -618,7 +626,7 @@ impl Optimizer {
                             )
                         }
                     })
-                    .unwrap()
+                    .expect("output_cartesian_product_joins is never empty")
             }
             #[cfg(feature = "sep-0006")]
             GraphPattern::Lateral { left, right } => {
@@ -932,6 +940,9 @@ fn estimate_graph_pattern_size(pattern: &GraphPattern, input_types: &VariableTyp
         } => match algorithm {
             LeftJoinAlgorithm::HashBuildRightProbeLeft { keys } => {
                 let left_size = estimate_graph_pattern_size(left, input_types);
+                // Clamp keys.len() to u32::MAX before casting to prevent truncation
+                #[expect(clippy::cast_possible_truncation)]
+                let keys_len_u32 = keys.len().min(u32::MAX as usize) as u32;
                 max(
                     left_size,
                     left_size
@@ -939,7 +950,7 @@ fn estimate_graph_pattern_size(pattern: &GraphPattern, input_types: &VariableTyp
                             right,
                             &infer_graph_pattern_types(right, input_types.clone()),
                         ))
-                        .saturating_div(1_000_usize.saturating_pow(keys.len().try_into().unwrap())),
+                        .saturating_div(1_000_usize.saturating_pow(keys_len_u32)),
                 )
             }
         },
@@ -986,9 +997,12 @@ fn estimate_join_cost(
 ) -> usize {
     match algorithm {
         JoinAlgorithm::HashBuildLeftProbeRight { keys } => {
+            // Clamp keys.len() to u32::MAX before casting to prevent truncation
+            #[expect(clippy::cast_possible_truncation)]
+            let keys_len_u32 = keys.len().min(u32::MAX as usize) as u32;
             estimate_graph_pattern_size(left, input_types)
                 .saturating_mul(estimate_graph_pattern_size(right, input_types))
-                .saturating_div(1_000_usize.saturating_pow(keys.len().try_into().unwrap()))
+                .saturating_div(1_000_usize.saturating_pow(keys_len_u32))
         }
     }
 }
