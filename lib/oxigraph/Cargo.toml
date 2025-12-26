@@ -54,6 +54,8 @@ csv.workspace = true
 oxhttp = { workspace = true, features = ["rustls-ring-native"] }
 bzip2.workspace = true
 tempfile.workspace = true
+sparshacl.workspace = true
+ctrlc = "3.4"
 
 [lints]
 workspace = true
